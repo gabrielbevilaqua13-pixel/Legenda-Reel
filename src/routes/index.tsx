@@ -26,6 +26,11 @@ export const Route = createFileRoute("/")({
 });
 
 type Phase = "idle" | "transcribing" | "ready" | "error";
+type SavedStyle = {
+  id: string; name: string; textColor: string; highlightColor: string; boxColor: string;
+  showHighlightBox: boolean; fontFamily: string; fontWeight: number; showStroke: boolean;
+  strokeColor: string; showShadow: boolean; maxWords: number; posY: number; scale: number;
+};
 
 function Index() {
   const transcribe = useServerFn(transcribeAudio);
@@ -39,6 +44,14 @@ function Index() {
   const [highlightColor, setHighlightColor] = useState("#e4ff3a");
   const [boxColor, setBoxColor] = useState("#ff4d2e");
   const [showHighlightBox, setShowHighlightBox] = useState(false);
+  const [fontFamily, setFontFamily] = useState("Montserrat");
+  const [fontWeight, setFontWeight] = useState(900);
+  const [showStroke, setShowStroke] = useState(true);
+  const [strokeColor, setStrokeColor] = useState("#000000");
+  const [showShadow, setShowShadow] = useState(false);
+  const [savedStyleName, setSavedStyleName] = useState("");
+  const [savedStyles, setSavedStyles] = useState<SavedStyle[]>([]);
+  const [favoritesLoaded, setFavoritesLoaded] = useState(false);
   const [maxWords, setMaxWords] = useState(3);
   const [posY, setPosY] = useState(0.68);
   const [scale, setScale] = useState(1);
@@ -51,13 +64,50 @@ function Index() {
   }, [url]);
 
   const baseStyle = STYLES.find((s) => s.id === styleId) ?? STYLES[0]!;
-  const style = useMemo(() => ({ ...baseStyle, fill: textColor, active: highlightColor, accent: baseStyle.accent ? highlightColor : baseStyle.accent, box: showHighlightBox ? boxColor : undefined, boxText: textColor }), [baseStyle, textColor, highlightColor, boxColor, showHighlightBox]);
+  const style = useMemo(() => ({
+    ...baseStyle, font: fontFamily, weight: fontWeight, fill: textColor, active: highlightColor,
+    accent: baseStyle.accent ? highlightColor : baseStyle.accent,
+    box: showHighlightBox ? boxColor : undefined, boxText: textColor,
+    stroke: showStroke ? strokeColor : undefined, shadow: showShadow,
+  }), [baseStyle, fontFamily, fontWeight, textColor, highlightColor, boxColor, showHighlightBox, showStroke, strokeColor, showShadow]);
   useEffect(() => {
     setTextColor(baseStyle.fill);
     setHighlightColor(baseStyle.accent ?? baseStyle.active);
     setBoxColor(baseStyle.box ?? "#ff4d2e");
     setShowHighlightBox(Boolean(baseStyle.box));
+    setFontFamily(baseStyle.font);
+    setFontWeight(baseStyle.weight);
+    setShowStroke(Boolean(baseStyle.stroke));
+    setStrokeColor(baseStyle.stroke ?? "#000000");
+    setShowShadow(Boolean(baseStyle.shadow));
   }, [styleId]);
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("legenda-saved-styles");
+      if (stored) setSavedStyles(JSON.parse(stored) as SavedStyle[]);
+    } catch { setSavedStyles([]); }
+    finally { setFavoritesLoaded(true); }
+  }, []);
+  useEffect(() => {
+    if (favoritesLoaded) localStorage.setItem("legenda-saved-styles", JSON.stringify(savedStyles));
+  }, [savedStyles, favoritesLoaded]);
+
+  const saveCurrentStyle = () => {
+    const name = savedStyleName.trim();
+    if (!name) return;
+    const saved: SavedStyle = {
+      id: String(Date.now()), name, textColor, highlightColor, boxColor, showHighlightBox,
+      fontFamily, fontWeight, showStroke, strokeColor, showShadow, maxWords, posY, scale,
+    };
+    setSavedStyles((current) => [...current, saved].slice(-12));
+    setSavedStyleName("");
+  };
+  const applySavedStyle = (saved: SavedStyle) => {
+    setTextColor(saved.textColor); setHighlightColor(saved.highlightColor); setBoxColor(saved.boxColor);
+    setShowHighlightBox(saved.showHighlightBox); setFontFamily(saved.fontFamily); setFontWeight(saved.fontWeight);
+    setShowStroke(saved.showStroke); setStrokeColor(saved.strokeColor); setShowShadow(saved.showShadow);
+    setMaxWords(saved.maxWords); setPosY(saved.posY); setScale(saved.scale);
+  };
   const chunks = useMemo(() => groupWords(words, maxWords), [words, maxWords]);
 
   const handleFile = async (f: File) => {
@@ -231,7 +281,7 @@ function Index() {
                 </div>
                 <span className="rounded-lg bg-primary/10 px-2.5 py-1.5 text-[10px] font-bold text-primary">5 PRESETS</span>
               </div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {STYLES.map((s) => (
                   <button key={s.id} onClick={() => setStyleId(s.id)} className={cn("group rounded-xl border px-3 py-4 text-center transition-all", s.id === styleId ? "border-primary/70 bg-primary/[0.09] shadow-glow" : "border-white/[0.08] bg-black/10 hover:border-white/25 hover:bg-white/[0.04]")}>
                     <div className="mx-auto grid h-11 w-11 place-items-center rounded-xl bg-black/30 text-2xl" style={{ color: s.active, fontFamily: s.font, fontWeight: s.weight, fontStyle: s.italic ? "italic" : "normal", textTransform: s.upper ? "uppercase" : "none", textShadow: "0 2px 10px #000" }}>Aa</div>
@@ -271,6 +321,25 @@ function Index() {
                 <ColorControl label="Destaque" value={highlightColor} onChange={setHighlightColor} />
                 <ColorControl label="Fundo do destaque" value={boxColor} onChange={setBoxColor} />
               </div>
+              <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                <label className="space-y-2 text-xs font-bold text-muted-foreground">
+                  <span className="block uppercase tracking-widest">Tipografia</span>
+                  <select value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} className="h-11 w-full rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-foreground">
+                    {[...new Set(STYLES.map((s) => s.font))].map((font) => <option key={font} value={font}>{font}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-2 text-xs font-bold text-muted-foreground">
+                  <span className="block uppercase tracking-widest">Peso da fonte</span>
+                  <select value={fontWeight} onChange={(e) => setFontWeight(Number(e.target.value))} className="h-11 w-full rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-foreground">
+                    <option value={400}>Regular</option><option value={500}>Médio</option><option value={600}>Seminegrito</option><option value={700}>Negrito</option><option value={900}>Extra negrito</option>
+                  </select>
+                </label>
+                <ColorControl label="Contorno" value={strokeColor} onChange={setStrokeColor} />
+                <div className="flex flex-col justify-center gap-3 rounded-xl border border-white/[0.08] bg-black/10 p-3 text-sm text-muted-foreground">
+                  <label className="flex items-center gap-3"><input type="checkbox" checked={showStroke} onChange={(e) => setShowStroke(e.target.checked)} className="h-4 w-4 accent-[var(--primary)]" /> Contorno no texto</label>
+                  <label className="flex items-center gap-3"><input type="checkbox" checked={showShadow} onChange={(e) => setShowShadow(e.target.checked)} className="h-4 w-4 accent-[var(--primary)]" /> Sombra suave</label>
+                </div>
+              </div>
               <label className="mt-5 flex cursor-pointer items-center gap-3 text-sm text-muted-foreground">
                 <input type="checkbox" checked={showHighlightBox} onChange={(e) => setShowHighlightBox(e.target.checked)} className="h-4 w-4 accent-[var(--primary)]" />
                 Aplicar fundo colorido à palavra ativa
@@ -289,9 +358,36 @@ function Index() {
             </div>
 
             <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.025] p-5 sm:p-6">
+              <div className="mb-5">
+                <div className="text-xs font-extrabold uppercase tracking-[0.18em] text-muted-foreground">04 / Seus modelos</div>
+                <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight">Estilos favoritos</h2>
+                <p className="mt-1 text-xs text-muted-foreground">Salve uma combinação e reutilize em outros projetos neste navegador.</p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input value={savedStyleName} onChange={(e) => setSavedStyleName(e.target.value)} maxLength={32} placeholder="Nome do estilo (ex.: Minha marca)" className="h-11 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-foreground outline-none focus:border-primary/60" />
+                <Button type="button" onClick={saveCurrentStyle} disabled={!savedStyleName.trim()} className="h-11 rounded-xl">Salvar estilo atual</Button>
+              </div>
+              {savedStyles.length > 0 ? (
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  {savedStyles.map((saved) => (
+                    <div key={saved.id} className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-black/10 p-3">
+                      <button type="button" onClick={() => applySavedStyle(saved)} className="min-w-0 flex-1 text-left">
+                        <span className="block truncate text-sm font-bold text-foreground">{saved.name}</span>
+                        <span className="mt-1 block text-[10px] text-muted-foreground">{saved.fontFamily} · {saved.maxWords} palavras por vez</span>
+                      </button>
+                      <button type="button" aria-label="Excluir estilo salvo" onClick={() => setSavedStyles((current) => current.filter((item) => item.id !== saved.id))} className="rounded-lg px-2 py-1 text-xs text-muted-foreground hover:bg-white/10 hover:text-foreground">Excluir</button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 rounded-xl border border-dashed border-white/10 px-4 py-5 text-center text-xs text-muted-foreground">Seus estilos salvos aparecerão aqui.</p>
+              )}
+            </div>
+
+            <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.025] p-5 sm:p-6">
               <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
                 <div>
-                  <div className="text-xs font-extrabold uppercase tracking-[0.18em] text-muted-foreground">04 / Revisão</div>
+                  <div className="text-xs font-extrabold uppercase tracking-[0.18em] text-muted-foreground">05 / Revisão</div>
                   <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight">Texto transcrito</h2>
                 </div>
                 <span className="rounded-full bg-white/[0.06] px-3 py-1 text-[10px] font-bold text-muted-foreground">{chunks.length} LEGENDAS</span>
@@ -310,7 +406,7 @@ function Index() {
 
             <div className="rounded-[1.75rem] border border-primary/25 bg-primary/[0.055] p-5 sm:p-6">
               <div className="mb-4">
-                <div className="text-xs font-extrabold uppercase tracking-[0.18em] text-primary">05 / Finalização</div>
+                <div className="text-xs font-extrabold uppercase tracking-[0.18em] text-primary">06 / Finalização</div>
                 <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight">Seu vídeo está quase pronto.</h2>
                 <p className="mt-1 text-xs text-muted-foreground">Exporte o vídeo com as legendas aplicadas ou baixe o arquivo SRT.</p>
               </div>

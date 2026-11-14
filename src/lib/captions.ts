@@ -76,6 +76,9 @@ export const STYLES: CaptionStyle[] = [
   { id: "elegante", name: "Elegante", font: "DM Serif Display", weight: 400, italic: true, upper: false, fill: "#ffffff", active: "#ffffff", dimInactive: true, shadow: true, sizeFactor: 1.05 },
   { id: "editorial", name: "Editorial", font: "Cormorant Garamond", weight: 500, upper: false, fill: "#ffffff", active: "#ffffff", shadow: true, reveal: true, accent: "#e9c98f", sizeFactor: 1.15 },
   { id: "cinema", name: "Cinema", font: "Anton", weight: 400, upper: true, fill: "#ffd60a", active: "#ffd60a", stroke: "#000000", sizeFactor: 1.1 },
+  { id: "neon", name: "Neon", font: "Anton", weight: 400, upper: true, fill: "#f8fafc", active: "#67e8f9", stroke: "#082f49", shadow: true, sizeFactor: 1.08 },
+  { id: "minimal", name: "Minimal", font: "Montserrat", weight: 600, upper: false, fill: "#ffffff", active: "#ffffff", shadow: true, sizeFactor: 0.88 },
+  { id: "documental", name: "Documental", font: "Cormorant Garamond", weight: 600, upper: false, fill: "#f5eee3", active: "#e9c98f", shadow: true, sizeFactor: 1.16 },
 ];
 
 export async function loadCaptionFonts() {

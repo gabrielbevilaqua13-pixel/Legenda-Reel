@@ -1,26 +1,40 @@
-# Reel Word Glow
+# Legenda
 
-Crie um site que faça uma única coisa: consiga colocar legendas com precisão e beleza para reels do Instagram.
+Aplicação web para criar legendas precisas e personalizadas para vídeos curtos, com sincronização palavra por palavra e exportação do vídeo.
 
-This project was built with [Lovable](https://lovable.dev).
+## Aplicação
 
-**Live app**: https://reel-word-glow.lovable.app
+https://reel-word-glow-app.onrender.com
 
-## Build with Lovable
+## Tecnologias
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/5eea75eb-df03-42e7-bca8-cef8044a11b1).
+- React
+- TanStack Start
+- TypeScript
+- Vite
+- Bun
+- Groq para transcrição de áudio
+- Render para hospedagem
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+## Desenvolvimento local
 
-## Development
+Requisitos: Bun e Node.js.
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
-
-```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+```bash
+git clone https://github.com/gabrielbevilaqua13-pixel/reel-word-glow.git
+cd reel-word-glow
+bun install
+bun run dev
 ```
+
+## Verificações
+
+```bash
+bun run lint
+bun run test
+bun run build
+```
+
+## Implantação
+
+O serviço de produção é hospedado no Render e acompanha a branch `redesign/interface-2026`.

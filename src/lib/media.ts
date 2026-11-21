@@ -79,6 +79,37 @@ export async function packageOriginal(file: File, chunks: Chunk[]) {
   return downloadZip([file, { name: stem + ".srt", input: toSrt(chunks) }]).blob();
 }
 
+export async function makePreview(file: File, signal: AbortSignal) {
+  const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  let conversion: Conversion | undefined;
+  const cancel = () => { void conversion?.cancel().catch(() => {}); };
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track) throw Error("Vídeo indisponível.");
+    const w = await track.getDisplayWidth();
+    const h = await track.getDisplayHeight();
+    const ratio = Math.min(1, 640 / Math.max(w, h));
+    const target = new BufferTarget();
+    conversion = await Conversion.init({
+      input,
+      output: new Output({ format: new Mp4OutputFormat(), target }),
+      video: {
+        fit: "contain", width: Math.max(2, 2 * Math.round(w * ratio / 2)),
+        height: Math.max(2, 2 * Math.round(h * ratio / 2)), frameRate: 24,
+        bitrate: 900000, allowTransformationMetadata: false,
+      },
+    });
+    if (!conversion.isValid || conversion.discardedTracks.some(({track}) => track.type === "audio" || track.type === "video")) throw Error("Formato incompatível.");
+    signal.throwIfAborted();
+    signal.addEventListener("abort", cancel, { once: true });
+    await conversion.execute();
+    return new Blob([target.buffer!], { type: "video/mp4" });
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    input.dispose();
+  }
+}
+
 export async function renderVideo(
   file: File,
   chunks: Chunk[],

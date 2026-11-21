@@ -7,7 +7,7 @@ import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
 import { transcribeAudio, type Word } from "@/lib/transcribe.functions";
 import { STYLES, drawCaptions, groupWords, loadCaptionFonts, retextChunk, toSrt } from "@/lib/captions";
-import { extractWavSegments, packageOriginal, renderVideo } from "@/lib/media";
+import { extractWavSegments, makePreview, packageOriginal, renderVideo } from "@/lib/media";
 import { mergeSegments } from "@/lib/timing";
 import { getWallet, getQuote, finishVideo } from "@/lib/billing.functions";
 import { MinuteWallet, timeLabel, type Wallet } from "@/components/MinuteWallet";
@@ -349,7 +349,7 @@ function Index() {
               <span className="rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-[10px] font-bold text-primary">AO VIVO</span>
             </div>
             <div className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-3 sm:p-4">
-              <Preview url={url} chunks={chunks} style={style} posY={posY} scale={scale} />
+              <Preview file={file!} url={url} chunks={chunks} style={style} posY={posY} scale={scale} />
             </div>
             <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
               <div className="flex items-center justify-between text-xs">
@@ -595,13 +595,13 @@ function Dropzone({ onFile, error }: { onFile: (f: File) => void; error: string 
 }
 
 function Preview({
-  url,
+  file, url,
   chunks,
   style,
   posY,
   scale,
 }: {
-  url: string;
+  file: File; url: string;
   chunks: ReturnType<typeof groupWords>;
   style: (typeof STYLES)[number];
   posY: number;
@@ -609,9 +609,31 @@ function Preview({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const state = useRef({ chunks, style, posY, scale });
-  state.current = { chunks, style, posY, scale };
-
+  const [light, setLight] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [previewError, setPreviewError] = useState(false);
+  const resumeAt = useRef(0);
+  const resumePlaying = useRef(false);
+  function startLightPreview(video: HTMLVideoElement) {
+    if (light) return;
+    resumeAt.current = video.currentTime;
+    resumePlaying.current = !video.paused;
+    video.pause();
+    setLight(true);
+  }
+  useEffect(() => {
+    if (!light) return;
+    const controller = new AbortController();
+    let objectUrl = "";
+    void makePreview(file, controller.signal).then(blob => {
+      if (controller.signal.aborted) return;
+      objectUrl = URL.createObjectURL(blob);
+      setPreviewUrl(objectUrl);
+    }).catch(() => {
+      if (!controller.signal.aborted) setPreviewError(true);
+    });
+    return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [file, light]);
   useEffect(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -626,6 +648,7 @@ function Preview({
     let lastStyle: typeof style | null = null;
     let lastPosY = -1;
     let lastScale = -1;
+    let wasAnimating = false;
     let disposed = false;
     const ctx = canvas.getContext("2d", { alpha: true, desynchronized: true });
 
@@ -644,7 +667,7 @@ function Preview({
 
     const drawFrame = (time: number) => {
       if (disposed || !video.videoWidth || !ctx) return;
-      const s = state.current;
+      const s = {chunks, style, posY, scale};
       const activeChunk = activeChunkIndex(s.chunks, time);
       const chunk = activeChunk >= 0 ? s.chunks[activeChunk] : undefined;
       const activeWord = chunk?.words.findIndex((word) => time >= word.start && time < word.end) ?? -1;
@@ -656,7 +679,8 @@ function Preview({
       // the spoken word/style changes, plus the brief 120 ms entrance animation.
       const entranceAnimating = chunkAge >= 0 && chunkAge < 0.14 ||
         (s.style.reveal && wordAge >= 0 && wordAge < 0.14);
-      if (!settingsChanged && !captionChanged && !entranceAnimating) return;
+      if (!settingsChanged && !captionChanged && !entranceAnimating && !wasAnimating) return;
+      wasAnimating = Boolean(entranceAnimating);
 
       // Keep the preview canvas lightweight even when the source is 4K.
       const maxDimension = 720;
@@ -669,7 +693,7 @@ function Preview({
       }
 
       ctx.clearRect(0, 0, width, height);
-      drawCaptions(ctx, width, height, s.chunks, time, s.style, { posY: s.posY, scale: s.scale });
+      if (chunk) drawCaptions(ctx, width, height, [chunk], time, s.style, { posY: s.posY, scale: s.scale });
 
       lastActiveChunk = activeChunk;
       lastActiveWord = activeWord;
@@ -699,15 +723,17 @@ function Preview({
       raf = requestAnimationFrame(fallbackTick);
     };
 
+    drawFrame(video.currentTime);
     void loadCaptionFonts().then(() => {
       if (disposed) return;
+      lastStyle = null;
       drawFrame(video.currentTime);
-    });
+    }).catch(() => {});
 
-    const redrawAtCurrentTime = () => drawFrame(video.currentTime);
+    const redrawAtCurrentTime = () => { lastStyle = null; drawFrame(video.currentTime); };
     if (typeof video.requestVideoFrameCallback === "function") {
       videoFrame = video.requestVideoFrameCallback(handleVideoFrame);
-      video.addEventListener("timeupdate", redrawAtCurrentTime);
+
       video.addEventListener("seeked", redrawAtCurrentTime);
       video.addEventListener("pause", redrawAtCurrentTime);
     } else {
@@ -720,19 +746,32 @@ function Preview({
       if (videoFrame && typeof video.cancelVideoFrameCallback === "function") {
         video.cancelVideoFrameCallback(videoFrame);
       }
-      video.removeEventListener("timeupdate", redrawAtCurrentTime);
       video.removeEventListener("seeked", redrawAtCurrentTime);
       video.removeEventListener("pause", redrawAtCurrentTime);
     };
-  }, []);
+  }, [chunks, style, posY, scale, previewUrl, url]);
 
   return (
     <div className="mx-auto w-full max-w-[380px]">
       <div className="relative aspect-[9/16] overflow-hidden rounded-[2rem] bg-card shadow-phone">
-        <video ref={videoRef} src={url} controls playsInline loop className="absolute inset-0 h-full w-full object-contain" />
+        <video ref={videoRef} src={previewUrl || url} onTimeUpdate={event => {
+          const video = event.currentTarget;
+          const quality = video.getVideoPlaybackQuality?.();
+          if (!light && !video.paused && quality && quality.totalVideoFrames >= 48 &&
+              quality.droppedVideoFrames > quality.totalVideoFrames * 0.12) startLightPreview(video);
+        }} onLoadedMetadata={event => {
+          const v = event.currentTarget;
+          if (previewUrl) {
+            v.currentTime = resumeAt.current;
+            if (resumePlaying.current) void v.play().catch(() => {});
+          }
+        }} controls playsInline loop className="absolute inset-0 h-full w-full object-contain" />
         <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full object-contain" />
       </div>
-      <p className="mt-4 text-center text-xs text-muted-foreground">Dê play para ver as legendas em tempo real.</p>
+      <p className="mt-4 text-center text-xs text-muted-foreground">{previewError ? "Este navegador não conseguiu preparar a prévia leve." : previewUrl ? "Prévia leve ativa." : light ? "Preparando prévia leve…" : "Dê play para ver as legendas em tempo real."}</p>
+      {!light && <Button variant="outline" className="mt-2 w-full" onClick={() => {
+        if (videoRef.current) startLightPreview(videoRef.current);
+      }}>Usar prévia leve</Button>}
     </div>
   );
 }

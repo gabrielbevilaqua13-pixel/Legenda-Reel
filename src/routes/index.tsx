@@ -620,17 +620,32 @@ function Preview({
     let raf = 0;
     let videoFrame = 0;
     let lastFallbackDraw = 0;
+    let lastPreviewFrame = -Infinity;
     let lastActiveChunk = -2;
     let lastActiveWord = -2;
     let lastStyle: typeof style | null = null;
     let lastPosY = -1;
     let lastScale = -1;
     let disposed = false;
+    const ctx = canvas.getContext("2d", { alpha: true, desynchronized: true });
+
+    const activeChunkIndex = (chunks: ReturnType<typeof groupWords>, time: number) => {
+      let first = 0;
+      let last = chunks.length - 1;
+      while (first <= last) {
+        const middle = Math.floor((first + last) / 2);
+        const chunk = chunks[middle]!;
+        if (time < chunk.start) last = middle - 1;
+        else if (time >= chunk.end) first = middle + 1;
+        else return middle;
+      }
+      return -1;
+    };
 
     const drawFrame = (time: number) => {
-      if (disposed || !video.videoWidth) return;
+      if (disposed || !video.videoWidth || !ctx) return;
       const s = state.current;
-      const activeChunk = s.chunks.findIndex((chunk) => time >= chunk.start && time < chunk.end);
+      const activeChunk = activeChunkIndex(s.chunks, time);
       const chunk = activeChunk >= 0 ? s.chunks[activeChunk] : undefined;
       const activeWord = chunk?.words.findIndex((word) => time >= word.start && time < word.end) ?? -1;
       const chunkAge = chunk ? time - chunk.start : Infinity;
@@ -653,8 +668,6 @@ function Preview({
         canvas.height = height;
       }
 
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
       ctx.clearRect(0, 0, width, height);
       drawCaptions(ctx, width, height, s.chunks, time, s.style, { posY: s.posY, scale: s.scale });
 
@@ -668,7 +681,12 @@ function Preview({
 
     const handleVideoFrame = (_: number, metadata: VideoFrameCallbackMetadata) => {
       if (disposed) return;
-      drawFrame(metadata.mediaTime);
+      // Caption changes do not need to run at the source frame rate. Capping
+      // their paint work keeps playback smooth on lower-powered devices.
+      if (metadata.expectedDisplayTime - lastPreviewFrame >= 33) {
+        lastPreviewFrame = metadata.expectedDisplayTime;
+        drawFrame(metadata.mediaTime);
+      }
       videoFrame = video.requestVideoFrameCallback(handleVideoFrame);
     };
 
@@ -686,11 +704,12 @@ function Preview({
       drawFrame(video.currentTime);
     });
 
+    const redrawAtCurrentTime = () => drawFrame(video.currentTime);
     if (typeof video.requestVideoFrameCallback === "function") {
       videoFrame = video.requestVideoFrameCallback(handleVideoFrame);
-      video.addEventListener("timeupdate", () => drawFrame(video.currentTime));
-      video.addEventListener("seeked", () => drawFrame(video.currentTime));
-      video.addEventListener("pause", () => drawFrame(video.currentTime));
+      video.addEventListener("timeupdate", redrawAtCurrentTime);
+      video.addEventListener("seeked", redrawAtCurrentTime);
+      video.addEventListener("pause", redrawAtCurrentTime);
     } else {
       raf = requestAnimationFrame(fallbackTick);
     }
@@ -701,6 +720,9 @@ function Preview({
       if (videoFrame && typeof video.cancelVideoFrameCallback === "function") {
         video.cancelVideoFrameCallback(videoFrame);
       }
+      video.removeEventListener("timeupdate", redrawAtCurrentTime);
+      video.removeEventListener("seeked", redrawAtCurrentTime);
+      video.removeEventListener("pause", redrawAtCurrentTime);
     };
   }, []);
 

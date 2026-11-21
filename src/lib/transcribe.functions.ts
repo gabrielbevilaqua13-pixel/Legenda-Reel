@@ -4,6 +4,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { z } from "zod";
+import { enabled, videoQuote } from "./billing.server";
+import { manifestSchema } from "./billing-schema";
+import { database, digest } from "./credits-store.server.mjs";
 import { normalizeWords } from "./timing";
 
 export type Word = { text: string; start: number; end: number };
@@ -162,7 +165,7 @@ function checkLocalTranscriptionLimit(ip: string): { allowed: boolean; retryAfte
 }
 
 async function checkTranscriptionLimit(ip: string): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
-  const redisUrl = process.env.REDIS_URL;
+  const redisUrl = process.env["REDIS_URL"];
   if (redisUrl) {
     try {
       const ipHash = createHash("sha256").update(ip).digest("hex");
@@ -208,6 +211,7 @@ export const transcribeAudio = createServerFn({ method: "POST" })
       .object({
         audioBase64: z.string().min(60).max(1_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/),
         duration: z.number().positive().max(12),
+        billing: z.object({parts:manifestSchema,index:z.number().int().nonnegative(),cost:z.number().int().nonnegative()}).optional(),
       })
       .parse(d),
   )
@@ -219,7 +223,7 @@ export const transcribeAudio = createServerFn({ method: "POST" })
       return { error: "Você atingiu o limite temporário de transcrições. Aguarde um pouco e tente novamente." };
     }
 
-    const apiKey = process.env.GROQ_API_KEY;
+    const apiKey = process.env["GROQ_API_KEY"];
     if (!apiKey) {
       console.error("Transcription configuration error: GROQ_API_KEY is missing");
       return { error: "A transcrição ainda não está configurada no servidor." };
@@ -227,9 +231,39 @@ export const transcribeAudio = createServerFn({ method: "POST" })
 
     try {
       const audioBytes = Buffer.from(data.audioBase64, "base64");
-      const maxAudioBytes = Math.ceil(data.duration * 16_000 * 2) + 44;
+      const maxAudioBytes = Math.ceil(data.duration * 16_000 * 2) + 46;
       if (audioBytes.byteLength < 44 || audioBytes.byteLength > maxAudioBytes) {
         return { error: "O trecho de áudio enviado é inválido. Tente enviar o vídeo novamente." };
+      }
+      let cache: { wallet: string; hash: string } | null = null;
+      if (enabled()) {
+        if (!data.billing) return { error: "Atualize a página para conferir o saldo." };
+        const { parts, index, cost } = data.billing;
+        const part = parts[index];
+        const { wallet, price } = videoQuote(parts);
+        if (!part || !price.allowed || price.cost > cost)
+          return { error: "Confira seu saldo antes de transcrever." };
+        const hash = digest(data.audioBase64);
+        if (
+          hash !== part.hash ||
+          data.duration !== part.duration ||
+          Math.abs((audioBytes.length - 44) / 32000 - part.duration) > 0.0001 ||
+          audioBytes.toString("ascii", 0, 4) !== "RIFF" ||
+          audioBytes.toString("ascii", 8, 16) !== "WAVEfmt " ||
+          audioBytes.readUInt32LE(16) !== 16 ||
+          audioBytes.readUInt16LE(20) !== 1 ||
+          audioBytes.readUInt16LE(22) !== 1 ||
+          audioBytes.readUInt32LE(24) !== 16000 ||
+          audioBytes.readUInt16LE(34) !== 16 ||
+          audioBytes.toString("ascii", 36, 40) !== "data" ||
+          audioBytes.readUInt32LE(40) !== audioBytes.length - 44
+        )
+          return { error: "O áudio não corresponde ao orçamento." };
+        const db = database();
+        db.prepare("DELETE FROM parts WHERE expires<=?").run(Date.now());
+        if (db.prepare("SELECT 1 FROM parts WHERE wallet=? AND hash=?").get(wallet, hash))
+          return { words: [] };
+        cache = { wallet, hash };
       }
       const form = new FormData();
       form.append("file", new Blob([audioBytes], { type: "audio/wav" }), "audio.wav");
@@ -272,6 +306,18 @@ export const transcribeAudio = createServerFn({ method: "POST" })
         data.duration,
       );
 
+      if (cache) {
+        database()
+          .prepare("INSERT OR REPLACE INTO parts VALUES(?,?,?,?,?)")
+          .run(
+            cache.wallet,
+            cache.hash,
+            data.duration,
+            JSON.stringify(words),
+            Date.now() + 3600000,
+          );
+        return { words: [] };
+      }
       if (!words.length) return { error: "Não encontramos fala neste vídeo." };
       return { words };
     } catch (error) {

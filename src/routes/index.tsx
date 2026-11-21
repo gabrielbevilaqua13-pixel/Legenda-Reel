@@ -9,6 +9,9 @@ import { transcribeAudio, type Word } from "@/lib/transcribe.functions";
 import { STYLES, drawCaptions, groupWords, loadCaptionFonts, retextChunk, toSrt } from "@/lib/captions";
 import { extractWavSegments, renderVideo } from "@/lib/media";
 import { mergeSegments } from "@/lib/timing";
+import { getWallet, getQuote, finishVideo } from "@/lib/billing.functions";
+import { MinuteWallet, timeLabel, type Wallet } from "@/components/MinuteWallet";
+import type { Manifest } from "@/lib/billing-schema";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -110,40 +113,99 @@ function Index() {
   };
   const chunks = useMemo(() => groupWords(words, maxWords), [words, maxWords]);
 
+  const [wallet, setWallet] = useState<Wallet | null | undefined>(undefined);
+  const [walletError, setWalletError] = useState(false);
+  const [offer, setOffer] = useState<{
+    parts: Manifest;
+    audio: Awaited<ReturnType<typeof extractWavSegments>>;
+    price: Awaited<ReturnType<typeof getQuote>>;
+  } | null>(null);
+  const busy = useRef(false);
+  const refreshWallet = async () => {
+    const next = await getWallet();
+    setWallet(next);
+    setWalletError(false);
+  };
+  useEffect(() => {
+    void refreshWallet().catch(() => setWalletError(true));
+  }, []);
   const handleFile = async (f: File) => {
-    if (!f.type.startsWith("video/")) return setError("Envie um arquivo de vídeo."), setPhase("error");
+    if (!f.type.startsWith("video/"))
+      return (setError("Envie um arquivo de vídeo."), setPhase("error"));
+    if (busy.current || wallet === undefined) return;
+    busy.current = true;
     setFile(f);
     setUrl(URL.createObjectURL(f));
+    setError("");
+    setPhase("transcribing");
+    try {
+      const audio = await extractWavSegments(f);
+      if (wallet) {
+        const parts: Manifest = [];
+        for (const { base64, ...window } of audio.segments) {
+          const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(base64));
+          parts.push({
+            ...window,
+            hash: Array.from(new Uint8Array(bytes), (v) => v.toString(16).padStart(2, "0")).join(
+              "",
+            ),
+          });
+        }
+        const price = await getQuote({ data: parts });
+        setOffer({ audio, parts, price });
+        setPhase("idle");
+      } else await runVideo(audio);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao preparar o vídeo.");
+      setPhase("error");
+    } finally {
+      busy.current = false;
+    }
+  };
+  const runVideo = async (
+    audio: Awaited<ReturnType<typeof extractWavSegments>>,
+    parts?: Manifest,
+    cost = 0,
+  ) => {
     setPhase("transcribing");
     setError("");
-    try {
-      const { segments, duration } = await extractWavSegments(f);
-      if (duration > 600) throw new Error("Vídeos de até 10 minutos.");
-      const all: Word[][] = new Array(segments.length);
-      let next = 0;
-      const worker = async () => {
-        while (next < segments.length) {
-          const k = next++;
-           const seg = segments[k];
-           if (!seg) continue;
-          const res = await transcribe({ data: { audioBase64: seg.base64, duration: seg.duration } });
-          if ("error" in res) {
-            if (res.error.startsWith("Não encontramos fala")) { all[k] = []; continue; }
-            throw new Error(res.error);
-          }
-           all[k] = res.words;
+    const all: Word[][] = [];
+    for (const [index, seg] of audio.segments.entries()) {
+      const res = await transcribe({
+        data: {
+          audioBase64: seg.base64,
+          duration: seg.duration,
+          ...(parts ? { billing: { parts, index, cost } } : {}),
+        },
+      });
+      if ("error" in res) {
+        if (res.error.startsWith("Não encontramos fala")) {
+          all.push([]);
+          continue;
         }
-      };
-      // Process one segment at a time to avoid simultaneous server actions and
-      // large overlapping audio payloads on memory-constrained browsers/instances.
-      await worker();
-       const merged = mergeSegments(all, segments, duration);
-      if (!merged.length) throw new Error("Não encontramos fala neste vídeo.");
-      setWords(merged);
-      setPhase("ready");
+        throw Error(res.error);
+      }
+      all.push(res.words);
+    }
+    const merged = parts
+      ? (await finishVideo({ data: { parts, cost } })).words
+      : mergeSegments(all, audio.segments, audio.duration);
+    if (!merged.length) throw Error("Não encontramos fala neste vídeo.");
+    setWords(merged);
+    setOffer(null);
+    setPhase("ready");
+    if (parts) void refreshWallet().catch(() => setWalletError(true));
+  };
+  const confirmOffer = async () => {
+    if (!offer || busy.current) return;
+    busy.current = true;
+    try {
+      await runVideo(offer.audio, offer.parts, offer.price.cost);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Algo deu errado.");
+      setError(e instanceof Error ? e.message : "Falha na transcrição.");
       setPhase("error");
+    } finally {
+      busy.current = false;
     }
   };
 
@@ -206,7 +268,7 @@ function Index() {
           Dê voz às suas ideias.<br /><span className="text-primary">Destaque cada palavra.</span>
         </h1>
         <p className="mt-5 max-w-xl text-sm leading-7 text-muted-foreground sm:text-base">
-          Transforme seus vídeos em conteúdo pronto para publicar. Transcrição automática, legendas sincronizadas e estilos que valorizam sua mensagem.
+          {wallet ? "Envie seu vídeo, confira o tempo e personalize as legendas. Cada pacote de 10 minutos custa R$ 9,90, sem mensalidade." : "Transforme seus vídeos em conteúdo pronto para publicar. Transcrição automática, legendas sincronizadas e estilos que valorizam sua mensagem."}
         </p>
       </section>
 
@@ -225,7 +287,19 @@ function Index() {
 
       {(phase === "idle" || phase === "error") && (
         <div className="rounded-[2rem] border border-white/10 bg-white/[0.025] p-3 shadow-2xl sm:p-5">
-          <Dropzone onFile={handleFile} error={phase === "error" ? error : ""} />
+          {wallet && <MinuteWallet wallet={wallet} onChange={async()=>{
+            await refreshWallet();
+            if(offer) setOffer({...offer,price:await getQuote({data:offer.parts})});
+          }}/>}
+          {walletError && <button onClick={()=>void refreshWallet().catch(()=>setWalletError(true))}>Recarregar informações do saldo</button>}
+          {wallet===undefined ? <p role="status" className="p-4">{walletError?"Não foi possível consultar o saldo.":"Preparando o editor…"}</p> : offer ? <div className="space-y-3 rounded-xl border p-5">
+            <h2 className="break-all font-bold">{file?.name}</h2>
+            <p>Duração: {timeLabel(Math.ceil(offer.audio.duration-0.00001))}. Desconto após a transcrição: {timeLabel(offer.price.cost)}.</p>
+            <p className="text-sm text-muted-foreground">{offer.price.free ? "Este vídeo usa o seu teste grátis." : offer.price.allowed ? "Edições e exportações estão incluídas." : "Saldo insuficiente. Ative um pacote ou escolha um vídeo mais curto."}</p>
+            {error && <p role="alert">{error}</p>}
+            <div className="flex flex-wrap gap-2"><Button onClick={confirmOffer} disabled={!offer.price.allowed}>Confirmar transcrição</Button>
+            <Button variant="outline" onClick={()=>{setOffer(null);reset();}}>Trocar vídeo</Button></div>
+          </div> : <Dropzone onFile={handleFile} error={phase === "error" ? error : ""} />}
           <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 px-2 pb-3 pt-5 text-[11px] text-muted-foreground">
             <span className="flex items-center gap-2"><FileText className="h-3.5 w-3.5 text-primary" /> MP4 e MOV</span>
             <span>Até 10 minutos</span>
@@ -490,7 +564,7 @@ function Dropzone({ onFile, error }: { onFile: (f: File) => void; error: string 
         <Upload className="h-8 w-8" />
       </div>
       <div className="relative font-display text-2xl font-extrabold tracking-tight sm:text-3xl">{over ? "Solte para começar" : "Arraste seu vídeo para cá"}</div>
-      <p className="relative mt-3 max-w-sm text-sm leading-6 text-muted-foreground">ou clique para selecionar um arquivo no seu dispositivo. A transcrição e a sincronização acontecem automaticamente.</p>
+      <p className="relative mt-3 max-w-sm text-sm leading-6 text-muted-foreground">ou clique para selecionar um arquivo no seu dispositivo. Você poderá revisar as legendas antes de exportar.</p>
       <span className="relative mt-7 inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-xs font-extrabold text-primary-foreground shadow-glow transition-transform group-hover:scale-[1.03]">Selecionar vídeo <Upload className="h-3.5 w-3.5" /></span>
       <div className="relative mt-7 flex flex-wrap justify-center gap-2">
         {["MP4", "MOV", "Até 10 minutos"].map((item) => <span key={item} className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[10px] font-bold tracking-wide text-muted-foreground">{item}</span>)}

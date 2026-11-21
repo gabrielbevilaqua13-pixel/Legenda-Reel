@@ -1,0 +1,32 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, expect, test } from "vitest";
+import { database, issuePack, quote, redeem, settle } from "../lib/credits-store.server.mjs";
+const dir = mkdtempSync(join(tmpdir(), "legenda-test-"));
+const previous = process.env["LEGENDA_CREDITS_DB"];
+process.env["LEGENDA_CREDITS_DB"] = join(dir, "test.sqlite");
+afterAll(() => {
+  database().close();
+  if (previous) process.env["LEGENDA_CREDITS_DB"] = previous;
+  else delete process.env["LEGENDA_CREDITS_DB"];
+  rmSync(dir, { recursive: true, force: true });
+});
+test("trial, idempotent purchases, recovery, repeat videos and concurrent balance changes", () => {
+  const db = database();
+  db.exec("INSERT INTO wallets(id) VALUES('a'),('b')");
+  expect(quote(db, "a", "ip", "short", 60).free).toBe(true);
+  expect(quote(db, "a", "ip", "long", 61).allowed).toBe(false);
+  settle("a", "ip", "short", 60, 0);
+  expect(quote(db, "a", "ip", "second", 2).allowed).toBe(false);
+  expect(quote(db, "b", "ip", "short", 60).allowed).toBe(false);
+  const code = issuePack("1234");
+  expect(issuePack("1234")).toBe(code);
+  expect(redeem("a", code)).toBe("a");
+  expect(redeem("b", code)).toBe("a");
+  expect(quote(db, "a", "ip", "paid", 400).available).toBe(600);
+  settle("a", "ip", "paid", 400, 400);
+  settle("a", "ip", "paid", 400, 400);
+  expect(() => settle("a", "ip", "racing", 400, 400)).toThrow();
+  expect(quote(db, "a", "ip", "another", 200).available).toBe(200);
+});

@@ -49,15 +49,15 @@ export type CaptionStyle = {
   upper: boolean;
   fill: string;
   active: string;
-  stroke?: string;
-  box?: string;
-  boxText?: string;
+  stroke?: string | undefined;
+  box?: string | undefined;
+  boxText?: string | undefined;
   dimInactive?: boolean;
   shadow?: boolean;
   sizeFactor: number;
   /** Words appear one by one as spoken (fade + rise); key word in italic accent color. */
   reveal?: boolean;
-  accent?: string;
+  accent?: string | undefined;
 };
 
 /** Picks the most meaningful word of a chunk (longest, 5+ letters) to emphasize. */

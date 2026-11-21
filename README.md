@@ -43,16 +43,17 @@ O serviço de produção é hospedado no Render e acompanha a branch `redesign/i
 
 O primeiro vídeo de até 60 segundos pode usar o teste gratuito. Cada pacote avulso custa R$ 9,90 e adiciona 600 segundos. A cotação arredonda a duração total para o próximo segundo. Edições, exportações e o reenvio do mesmo áudio pela mesma carteira não geram novo débito. O teste é vinculado à carteira, com limite adicional de um teste por rede a cada 24 horas. Os códigos de pacote também recuperam a carteira em outro navegador e devem ficar com o comprador.
 
-O piloto usa o mesmo Valkey do controle de requisições para manter os saldos. Configure no servidor:
+O piloto guarda saldos, pacotes e recibos no PostgreSQL do Supabase. Configure no servidor:
 
 | Variável                  | Valor                                                                |
 | ------------------------- | -------------------------------------------------------------------- |
-| REDIS_URL                 | Endereço privado do Valkey persistente.                              |
+| SUPABASE_URL | URL do projeto com as funções de créditos do Legenda. |
+| SUPABASE_PUBLISHABLE_KEY | Chave publicável do projeto. |
 | MERCADO_PAGO_PAYMENT_LINK | Link de pagamento público do Mercado Pago para o produto de R$ 9,90. |
 | LEGENDA_SUPPORT_EMAIL     | E-mail de atendimento que receberá a referência do pagamento.        |
 | LEGENDA_ADMIN_SECRET      | Senha longa para a área administrativa.                              |
 
-Sem o Valkey, o editor mantém o fluxo anterior. A compra aparece quando o link e o contato estão configurados.
+O controle de requisições usa memória local. Para compartilhar os limites, configure REDIS_URL e REDIS_RATE_LIMIT_ENABLED=true. A compra aparece quando o link e o contato estão configurados.
 
 Após conferir na conta vendedora o pagamento aprovado de R$ 9,90, abra `/admin`, informe a senha administrativa e o ID numérico do pagamento. A página gera o código do comprador.
 

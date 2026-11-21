@@ -72,7 +72,10 @@ function checkLocalTranscriptionLimit(ip: string): { allowed: boolean; retryAfte
 async function checkTranscriptionLimit(
   ip: string,
 ): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
-  const redisUrl = process.env["REDIS_URL"];
+  const redisUrl =
+    process.env["REDIS_RATE_LIMIT_ENABLED"] === "true"
+      ? process.env["REDIS_URL"]
+      : undefined;
   if (redisUrl) {
     try {
       const ipHash = createHash("sha256").update(ip).digest("hex");

@@ -3,7 +3,8 @@ import { getCookie, setCookie, getRequestIP } from "@tanstack/react-start/server
 import { digest, quote } from "./credits-store.server";
 import type { Manifest } from "./billing-schema";
 
-export const enabled = () => Boolean(process.env["REDIS_URL"]);
+export const enabled = () =>
+  Boolean(process.env["SUPABASE_URL"] && process.env["SUPABASE_PUBLISHABLE_KEY"]);
 export function remember(id: string) {
   setCookie("legenda-wallet", id, {
     httpOnly: true,

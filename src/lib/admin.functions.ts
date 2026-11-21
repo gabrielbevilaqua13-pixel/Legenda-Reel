@@ -3,7 +3,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequestIP } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { issuePack } from "./credits-store.server";
-import { redis } from "./redis.server";
+
+const attempts = new Map<string, { count: number; expires: number }>();
 
 function matchesSecret(provided: string) {
   const expected = process.env["LEGENDA_ADMIN_SECRET"] || "";
@@ -28,10 +29,14 @@ export const issuePackAdmin = createServerFn({ method: "POST" })
     const network = createHash("sha256")
       .update(getRequestIP({ xForwardedFor: true }) || "unknown")
       .digest("hex");
-    const attemptKey = `legenda:admin-attempts:${network}`;
-    const attempts = await redis(["INCR", attemptKey]);
-    if (attempts === 1) await redis(["EXPIRE", attemptKey, "3600"]);
-    if (typeof attempts !== "number" || attempts > 10 || !matchesSecret(data.secret)) {
+    const now = Date.now();
+    const previous = attempts.get(network);
+    const attempt =
+      !previous || previous.expires <= now
+        ? { count: 1, expires: now + 3_600_000 }
+        : { count: previous.count + 1, expires: previous.expires };
+    attempts.set(network, attempt);
+    if (attempt.count > 10 || !matchesSecret(data.secret)) {
       throw new Error("Acesso não autorizado.");
     }
     return { code: await issuePack(data.payment) };

@@ -349,7 +349,7 @@ function Index() {
               <span className="rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-[10px] font-bold text-primary">AO VIVO</span>
             </div>
             <div className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-3 sm:p-4">
-              <Preview file={file!} url={url} chunks={chunks} style={style} posY={posY} scale={scale} />
+              <Preview file={file!} url={url} chunks={chunks} style={style} posY={posY} scale={scale} exporting={exporting !== null} />
             </div>
             <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
               <div className="flex items-center justify-between text-xs">
@@ -596,12 +596,14 @@ function Dropzone({ onFile, error }: { onFile: (f: File) => void; error: string 
 
 function Preview({
   file, url,
+  exporting,
   chunks,
   style,
   posY,
   scale,
 }: {
   file: File; url: string;
+  exporting: boolean;
   chunks: ReturnType<typeof groupWords>;
   style: (typeof STYLES)[number];
   posY: number;
@@ -612,6 +614,11 @@ function Preview({
   const [light, setLight] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
   const [previewError, setPreviewError] = useState(false);
+  const [previewProgress, setPreviewProgress] = useState(0);
+  const cachedPreview = useRef("");
+  useEffect(() => () => {
+    if (cachedPreview.current) URL.revokeObjectURL(cachedPreview.current);
+  }, []);
   const resumeAt = useRef(0);
   const resumePlaying = useRef(false);
   function startLightPreview(video: HTMLVideoElement) {
@@ -619,21 +626,30 @@ function Preview({
     resumeAt.current = video.currentTime;
     resumePlaying.current = !video.paused;
     video.pause();
+    setPreviewError(false);
+    setPreviewProgress(0);
     setLight(true);
   }
   useEffect(() => {
-    if (!light) return;
+    if (exporting) {
+      videoRef.current?.pause();
+      resumePlaying.current = false;
+    }
+  }, [exporting]);
+  useEffect(() => {
+    if (!light || exporting || cachedPreview.current) return;
     const controller = new AbortController();
     let objectUrl = "";
-    void makePreview(file, controller.signal).then(blob => {
+    void makePreview(file, controller.signal, setPreviewProgress).then(blob => {
       if (controller.signal.aborted) return;
       objectUrl = URL.createObjectURL(blob);
+      cachedPreview.current = objectUrl;
       setPreviewUrl(objectUrl);
     }).catch(() => {
       if (!controller.signal.aborted) setPreviewError(true);
     });
-    return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [file, light]);
+    return () => { controller.abort(); };
+  }, [file, light, exporting]);
   useEffect(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -754,11 +770,8 @@ function Preview({
   return (
     <div className="mx-auto w-full max-w-[380px]">
       <div className="relative aspect-[9/16] overflow-hidden rounded-[2rem] bg-card shadow-phone">
-        <video ref={videoRef} src={previewUrl || url} onTimeUpdate={event => {
-          const video = event.currentTarget;
-          const quality = video.getVideoPlaybackQuality?.();
-          if (!light && !video.paused && quality && quality.totalVideoFrames >= 48 &&
-              quality.droppedVideoFrames > quality.totalVideoFrames * 0.12) startLightPreview(video);
+        <video ref={videoRef} src={previewUrl || url} onPlay={event => {
+          if (exporting || (light && !previewUrl && !previewError)) event.currentTarget.pause();
         }} onLoadedMetadata={event => {
           const v = event.currentTarget;
           if (previewUrl) {
@@ -768,8 +781,12 @@ function Preview({
         }} controls playsInline loop className="absolute inset-0 h-full w-full object-contain" />
         <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full object-contain" />
       </div>
-      <p className="mt-4 text-center text-xs text-muted-foreground">{previewError ? "Este navegador não conseguiu preparar a prévia leve." : previewUrl ? "Prévia leve ativa." : light ? "Preparando prévia leve…" : "Dê play para ver as legendas em tempo real."}</p>
-      {!light && <Button variant="outline" className="mt-2 w-full" onClick={() => {
+      <p className="mt-4 text-center text-xs text-muted-foreground">{exporting ? "Prévia pausada durante a exportação." : previewError ? "Este navegador não conseguiu preparar a prévia leve." : previewUrl ? "Prévia leve ativa." : light ? `Preparando prévia leve… ${Math.round(previewProgress * 100)}%` : "Dê play para ver as legendas em tempo real."}</p>
+      {light && !previewUrl && <Button variant="outline" className="mt-2 w-full" onClick={() => {
+        setLight(false);
+        setPreviewError(false);
+      }}>Voltar ao vídeo original</Button>}
+      {!light && <Button disabled={exporting} variant="outline" className="mt-2 w-full" onClick={() => {
         if (videoRef.current) startLightPreview(videoRef.current);
       }}>Usar prévia leve</Button>}
     </div>

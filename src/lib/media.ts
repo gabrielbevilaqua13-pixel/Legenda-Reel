@@ -79,7 +79,7 @@ export async function packageOriginal(file: File, chunks: Chunk[]) {
   return downloadZip([file, { name: stem + ".srt", input: toSrt(chunks) }]).blob();
 }
 
-export async function makePreview(file: File, signal: AbortSignal) {
+export async function makePreview(file: File, signal: AbortSignal, onProgress: (value: number) => void = () => {}) {
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   let conversion: Conversion | undefined;
   const cancel = () => { void conversion?.cancel().catch(() => {}); };
@@ -102,6 +102,7 @@ export async function makePreview(file: File, signal: AbortSignal) {
     if (!conversion.isValid || conversion.discardedTracks.some(({track}) => track.type === "audio" || track.type === "video")) throw Error("Formato incompatível.");
     signal.throwIfAborted();
     signal.addEventListener("abort", cancel, { once: true });
+    conversion.onProgress = onProgress;
     await conversion.execute();
     return new Blob([target.buffer!], { type: "video/mp4" });
   } finally {
@@ -153,6 +154,9 @@ export async function renderVideo(
 
     if (!conversion.isValid || conversion.discardedTracks.some(({ track }) => track.type === "video")) {
       throw new Error("O navegador não conseguiu codificar a imagem deste vídeo.");
+    }
+    if (conversion.discardedTracks.some(({ track }) => track.type === "audio")) {
+      throw new Error("O navegador não conseguiu preservar o áudio deste vídeo. A exportação foi interrompida.");
     }
 
     conversion.onProgress = (p) => onProgress(p);

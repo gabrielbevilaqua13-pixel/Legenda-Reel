@@ -162,7 +162,7 @@ function checkLocalTranscriptionLimit(ip: string): { allowed: boolean; retryAfte
 }
 
 async function checkTranscriptionLimit(ip: string): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
-  const redisUrl = process.env.REDIS_URL;
+  const redisUrl = process.env['REDIS_URL'];
   if (redisUrl) {
     try {
       const ipHash = createHash("sha256").update(ip).digest("hex");
@@ -219,7 +219,7 @@ export const transcribeAudio = createServerFn({ method: "POST" })
       return { error: "Você atingiu o limite temporário de transcrições. Aguarde um pouco e tente novamente." };
     }
 
-    const apiKey = process.env.GROQ_API_KEY;
+    const apiKey = process.env['GROQ_API_KEY'];
     if (!apiKey) {
       console.error("Transcription configuration error: GROQ_API_KEY is missing");
       return { error: "A transcrição ainda não está configurada no servidor." };

@@ -15,6 +15,12 @@ export default defineConfig({
       },
     }),
     viteReact(),
-    nitro(),
+    nitro({
+      output: {
+        dir: "dist",
+        serverDir: "dist/server",
+        publicDir: "dist/public",
+      },
+    }),
   ],
 });

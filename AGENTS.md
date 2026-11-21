@@ -3,3 +3,4 @@
 - Decode transcription audio on its presentation timeline and merge overlapping short windows by midpoint ownership; this preserves offsets without duplicating context words.
 - Validate timing data in the shared browser-safe timing module and use presented frame timestamps in preview; this keeps rendering aligned with export.
 - Call the AI Gateway through its typed SDK inside server handlers; this preserves streaming and structured error handling without exposing credentials.
+- Keep Nitro production output under dist (server in dist/server, public assets in dist/public) and the start script aligned with it; Lovable requires dist for deployment.

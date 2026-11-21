@@ -7,7 +7,9 @@ import {
   Input,
   Mp4OutputFormat,
   Output,
-  QUALITY_VERY_HIGH,
+  QUALITY_HIGH,
+  type InputVideoTrack,
+  type VideoSample,
 } from "mediabunny";
 import { drawCaptions, type CaptionStyle, type Chunk } from "./captions";
 import { segmentWindows, type SegmentWindow } from "./timing";
@@ -75,8 +77,9 @@ function encodeWav(pcm: Float32Array): string {
 
 /**
  * Renders the captioned video frame by frame (not in real time), so no frames
- * are dropped and the output never stutters. Falls back to real-time capture
- * only when the browser lacks WebCodecs support.
+ * are dropped and the output never stutters. If the browser refuses the
+ * encoder settings, retries with smaller resolutions before falling back to
+ * real-time capture.
  */
 export async function renderVideo(
   file: File,
@@ -86,15 +89,36 @@ export async function renderVideo(
   opts: { posY: number; scale: number },
   onProgress: (p: number) => void,
 ): Promise<{ blob: Blob; ext: string }> {
+  const problems: string[] = [];
+
   if (typeof VideoEncoder !== "undefined") {
-    try {
-      return await renderPrecise(file, chunks, style, opts, onProgress);
-    } catch (e) {
-      console.warn("Renderização precisa falhou, usando captura em tempo real:", e);
+    // Tenta 1080p e, se o navegador recusar, 720p e depois 540p.
+    for (const maxLongSide of [1920, 1280, 960]) {
+      try {
+        onProgress(0);
+        return await renderPrecise(file, chunks, style, opts, onProgress, maxLongSide);
+      } catch (e) {
+        console.warn(`Renderização precisa falhou (${maxLongSide}px):`, e);
+        problems.push(e instanceof Error ? e.message : String(e));
+      }
     }
   }
-  return renderRealtime(url, chunks, style, opts, onProgress);
+
+  try {
+    onProgress(0);
+    return await renderRealtime(url, chunks, style, opts, onProgress);
+  } catch (e) {
+    console.warn("Captura em tempo real falhou:", e);
+    problems.push(e instanceof Error ? e.message : String(e));
+  }
+
+  throw new Error(
+    "Seu navegador não conseguiu gerar o vídeo. Tente no Chrome ou Edge (computador) ou com um vídeo menor. " +
+      `Detalhe: ${problems[problems.length - 1] ?? "desconhecido"}`,
+  );
 }
+
+const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
 async function renderPrecise(
   file: File,
@@ -102,44 +126,70 @@ async function renderPrecise(
   style: CaptionStyle,
   opts: { posY: number; scale: number },
   onProgress: (p: number) => void,
+  maxLongSide: number,
 ): Promise<{ blob: Blob; ext: string }> {
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
-  const target = new BufferTarget();
-  const output = new Output({ format: new Mp4OutputFormat({ fastStart: "in-memory" }), target });
+  try {
+    const target = new BufferTarget();
+    const output = new Output({ format: new Mp4OutputFormat({ fastStart: "in-memory" }), target });
 
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d")!;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Não foi possível criar o canvas de exportação.");
 
-  const conversion = await Conversion.init({
-    input,
-    output,
-    video: {
-      quality: QUALITY_VERY_HIGH,
-      allowTransformationMetadata: false,
-      process: (sample) => {
-        const w = sample.displayWidth;
-        const h = sample.displayHeight;
-        if (canvas.width !== w || canvas.height !== h) {
-          canvas.width = w;
-          canvas.height = h;
-        }
-        sample.draw(ctx, 0, 0, w, h);
-        drawCaptions(ctx, w, h, chunks, sample.timestamp, style, opts);
-        return canvas;
-      },
-    },
-    showWarnings: false,
-  });
+    const processFrame = (sample: VideoSample) => {
+      const w = sample.displayWidth;
+      const h = sample.displayHeight;
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      sample.draw(ctx, 0, 0, w, h);
+      drawCaptions(ctx, w, h, chunks, sample.timestamp, style, opts);
+      return canvas;
+    };
 
-  if (!conversion.isValid) throw new Error("Não foi possível converter este vídeo.");
+    // Limita a resolução: vídeos 4K/alto bitrate costumam ser recusados pelo
+    // encoder H.264 do navegador ("The given encoding is not supported").
+    const videoOptions = async (track: InputVideoTrack) => {
+      const rotation = await track.getRotation();
+      const sw = await track.getSquarePixelWidth();
+      const sh = await track.getSquarePixelHeight();
+      const [w, h] = rotation % 180 === 0 ? [sw, sh] : [sh, sw];
+      const base = {
+        quality: QUALITY_HIGH,
+        allowTransformationMetadata: false,
+        process: processFrame,
+      };
+      const scale = Math.min(1, maxLongSide / Math.max(w, h));
+      if (scale < 1) {
+        return { ...base, width: even(w * scale), height: even(h * scale), fit: "fill" as const };
+      }
+      return base;
+    };
 
-  conversion.onProgress = (p) => onProgress(p);
-  await conversion.execute();
+    const conversion = await Conversion.init({
+      input,
+      output,
+      video: videoOptions,
+      showWarnings: false,
+    });
 
-  const buffer = target.buffer;
-  if (!buffer) throw new Error("Falha ao finalizar o vídeo.");
-  onProgress(1);
-  return { blob: new Blob([buffer], { type: "video/mp4" }), ext: "mp4" };
+    if (!conversion.isValid) {
+      const reasons = conversion.discardedTracks.map((d) => `${d.track.type}: ${d.reason}`).join(", ");
+      throw new Error(`Não foi possível converter este vídeo (${reasons || "sem detalhes"}).`);
+    }
+
+    conversion.onProgress = (p) => onProgress(p);
+    await conversion.execute();
+
+    const buffer = target.buffer;
+    if (!buffer) throw new Error("Falha ao finalizar o vídeo.");
+    onProgress(1);
+    return { blob: new Blob([buffer], { type: "video/mp4" }), ext: "mp4" };
+  } finally {
+    input.dispose();
+  }
 }
 
 async function renderRealtime(
@@ -149,6 +199,8 @@ async function renderRealtime(
   opts: { posY: number; scale: number },
   onProgress: (p: number) => void,
 ): Promise<{ blob: Blob; ext: string }> {
+  if (typeof MediaRecorder === "undefined") throw new Error("Este navegador não suporta gravação de vídeo.");
+
   const video = document.createElement("video");
   video.src = url;
   video.playsInline = true;
@@ -168,12 +220,37 @@ async function renderRealtime(
   ac.createMediaElementSource(video).connect(dest);
   const stream = canvas.captureStream(30);
   dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
-  const types = ["video/mp4;codecs=avc1,mp4a.40.2", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm"];
-  const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) ?? "video/webm";
-  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+
+  // Tenta cada formato (e com/sem bitrate) até o navegador aceitar um.
+  const types = ["video/mp4;codecs=avc1,mp4a.40.2", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  let rec: MediaRecorder | null = null;
+  let mime = "video/webm";
+  for (const t of types) {
+    if (!MediaRecorder.isTypeSupported(t)) continue;
+    for (const bits of [8_000_000, undefined]) {
+      try {
+        rec = new MediaRecorder(stream, bits ? { mimeType: t, videoBitsPerSecond: bits } : { mimeType: t });
+        mime = t;
+        break;
+      } catch {
+        rec = null;
+      }
+    }
+    if (rec) break;
+  }
+  if (!rec) {
+    try {
+      rec = new MediaRecorder(stream);
+      mime = rec.mimeType || "video/webm";
+    } catch {
+      await ac.close();
+      throw new Error("O navegador não suporta nenhum formato de gravação de vídeo.");
+    }
+  }
+  const recorder = rec;
   const parts: Blob[] = [];
-  rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
-  const done = new Promise<void>((r) => (rec.onstop = () => r()));
+  recorder.ondataavailable = (e) => e.data.size && parts.push(e.data);
+  const done = new Promise<void>((r) => (recorder.onstop = () => r()));
 
   let raf = 0;
   const loop = () => {
@@ -183,12 +260,12 @@ async function renderRealtime(
     raf = requestAnimationFrame(loop);
   };
   video.currentTime = 0;
-  rec.start(250);
+  recorder.start(250);
   await video.play();
   loop();
   await new Promise<void>((r) => (video.onended = () => r()));
   cancelAnimationFrame(raf);
-  rec.stop();
+  recorder.stop();
   await done;
   await ac.close();
   onProgress(1);

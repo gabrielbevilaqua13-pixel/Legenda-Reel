@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { getCookie, setCookie, getRequestIP } from "@tanstack/react-start/server";
-import { database, digest, quote } from "./credits-store.server.mjs";
+import { digest, quote } from "./credits-store.server";
 import type { Manifest } from "./billing-schema";
 
-export const enabled = () => Boolean(process.env["LEGENDA_CREDITS_DB"]);
+export const enabled = () => Boolean(process.env["REDIS_URL"]);
 export function remember(id: string) {
   setCookie("legenda-wallet", id, {
     httpOnly: true,
@@ -14,20 +14,14 @@ export function remember(id: string) {
   });
 }
 export function identity() {
-  const db = database();
   let id = getCookie("legenda-wallet");
-  if (
-    !id ||
-    !/^[a-f0-9]{48}$/.test(id) ||
-    !db.prepare("SELECT 1 FROM wallets WHERE id=?").get(id)
-  ) {
+  if (!id || !/^[a-f0-9]{48}$/.test(id)) {
     id = randomBytes(24).toString("hex");
-    db.prepare("INSERT INTO wallets(id) VALUES(?)").run(id);
     remember(id);
   }
   return { wallet: id, network: digest(getRequestIP({ xForwardedFor: true }) || "unknown") };
 }
-export function videoQuote(parts: Manifest) {
+export async function videoQuote(parts: Manifest) {
   let end = 0;
   for (const p of parts) {
     if (
@@ -50,6 +44,6 @@ export function videoQuote(parts: Manifest) {
     network,
     video,
     seconds,
-    price: quote(database(), wallet, network, video, seconds),
+    price: await quote(wallet, network, video, seconds),
   };
 }

@@ -1,12 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequestIP } from "@tanstack/react-start/server";
 import { createHash, randomUUID } from "node:crypto";
-import { createConnection } from "node:net";
-import { connect as connectTls } from "node:tls";
 import { z } from "zod";
 import { enabled, videoQuote } from "./billing.server";
 import { manifestSchema } from "./billing-schema";
-import { database, digest } from "./credits-store.server.mjs";
+import { digest, getCachedPart, putCachedPart } from "./credits-store.server";
+import { evalRedis } from "./redis.server";
 import { normalizeWords } from "./timing";
 
 export type Word = { text: string; start: number; end: number };
@@ -17,106 +16,6 @@ const MAX_REQUESTS_PER_HOUR = 150;
 const MAX_REQUESTS_PER_DAY = 400;
 const requestHistory = new Map<string, number[]>();
 let warnedAboutRedis = false;
-
-type RedisValue = string | number | null | RedisValue[];
-
-function parseResp(buffer: Buffer, offset = 0): { value: RedisValue; next: number } | null {
-  if (offset >= buffer.length) return null;
-  const type = String.fromCharCode(buffer[offset]!);
-  const lineEnd = buffer.indexOf("\r\n", offset);
-  if (lineEnd < 0) return null;
-  const header = buffer.toString("utf8", offset + 1, lineEnd);
-
-  if (type === "+" || type === "-") {
-    if (type === "-") throw new Error(`Valkey error: ${header}`);
-    return { value: header, next: lineEnd + 2 };
-  }
-  if (type === ":") return { value: Number(header), next: lineEnd + 2 };
-  if (type === "$") {
-    const length = Number(header);
-    if (length === -1) return { value: null, next: lineEnd + 2 };
-    const end = lineEnd + 2 + length;
-    if (buffer.length < end + 2) return null;
-    return { value: buffer.toString("utf8", lineEnd + 2, end), next: end + 2 };
-  }
-  if (type === "*") {
-    const count = Number(header);
-    if (count === -1) return { value: null, next: lineEnd + 2 };
-    const values: RedisValue[] = [];
-    let cursor = lineEnd + 2;
-    for (let i = 0; i < count; i += 1) {
-      const item = parseResp(buffer, cursor);
-      if (!item) return null;
-      values.push(item.value);
-      cursor = item.next;
-    }
-    return { value: values, next: cursor };
-  }
-  throw new Error("Unsupported Valkey response");
-}
-
-function encodeResp(args: string[]): string {
-  return `*${args.length}\r\n` + args.map((arg) => `$${Buffer.byteLength(arg)}\r\n${arg}\r\n`).join("");
-}
-
-async function runRedisCommand(redisUrl: string, command: string[]): Promise<RedisValue> {
-  const url = new URL(redisUrl);
-  if (url.protocol !== "redis:" && url.protocol !== "rediss:") {
-    throw new Error("REDIS_URL must use redis:// or rediss://");
-  }
-  const port = Number(url.port || 6379);
-  const commands: string[][] = [];
-  if (url.password) {
-    commands.push(url.username
-      ? ["AUTH", decodeURIComponent(url.username), decodeURIComponent(url.password)]
-      : ["AUTH", decodeURIComponent(url.password)]);
-  }
-  const database = url.pathname.replace(/^\//, "");
-  if (database && database !== "0") commands.push(["SELECT", database]);
-  commands.push(command);
-
-  return new Promise((resolve, reject) => {
-    const socket = url.protocol === "rediss:"
-      ? connectTls({ host: url.hostname, port, servername: url.hostname })
-      : createConnection({ host: url.hostname, port });
-    let buffer = Buffer.alloc(0);
-    let parsedCount = 0;
-    let lastValue: RedisValue = null;
-    let settled = false;
-
-    const fail = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      reject(error);
-    };
-
-    socket.setTimeout(4000, () => fail(new Error("Valkey connection timed out")));
-    socket.once(url.protocol === "rediss:" ? "secureConnect" : "connect", () => {
-      socket.write(commands.map(encodeResp).join(""));
-    });
-    socket.on("data", (chunk: Buffer) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      try {
-        while (parsedCount < commands.length) {
-          const parsed = parseResp(buffer);
-          if (!parsed) break;
-          lastValue = parsed.value;
-          buffer = buffer.subarray(parsed.next);
-          parsedCount += 1;
-        }
-        if (parsedCount === commands.length && !settled) {
-          settled = true;
-          socket.end();
-          resolve(lastValue);
-        }
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error("Valkey response error"));
-      }
-    });
-    socket.on("error", (error) => fail(error));
-  });
-}
 
 const RATE_LIMIT_SCRIPT = `
 local key = KEYS[1]
@@ -148,11 +47,17 @@ function checkLocalTranscriptionLimit(ip: string): { allowed: boolean; retryAfte
   const hourly = history.filter((time) => now - time < RATE_WINDOW_MS);
   if (hourly.length >= MAX_REQUESTS_PER_HOUR) {
     requestHistory.set(ip, history);
-    return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((hourly[0]! + RATE_WINDOW_MS - now) / 1000)) };
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((hourly[0]! + RATE_WINDOW_MS - now) / 1000)),
+    };
   }
   if (history.length >= MAX_REQUESTS_PER_DAY) {
     requestHistory.set(ip, history);
-    return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((history[0]! + DAILY_WINDOW_MS - now) / 1000)) };
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((history[0]! + DAILY_WINDOW_MS - now) / 1000)),
+    };
   }
   history.push(now);
   requestHistory.set(ip, history);
@@ -164,24 +69,30 @@ function checkLocalTranscriptionLimit(ip: string): { allowed: boolean; retryAfte
   return { allowed: true, retryAfterSeconds: 0 };
 }
 
-async function checkTranscriptionLimit(ip: string): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+async function checkTranscriptionLimit(
+  ip: string,
+): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
   const redisUrl = process.env["REDIS_URL"];
   if (redisUrl) {
     try {
       const ipHash = createHash("sha256").update(ip).digest("hex");
-      const result = await runRedisCommand(redisUrl, [
-        "EVAL",
+      const result = await evalRedis(
         RATE_LIMIT_SCRIPT,
-        "1",
-        `transcription-limit:${ipHash}`,
-        String(Date.now()),
-        `${Date.now()}:${randomUUID()}`,
-        String(RATE_WINDOW_MS),
-        String(DAILY_WINDOW_MS),
-        String(MAX_REQUESTS_PER_HOUR),
-        String(MAX_REQUESTS_PER_DAY),
-      ]);
-      if (!Array.isArray(result) || typeof result[0] !== "number" || typeof result[1] !== "number") {
+        [`transcription-limit:${ipHash}`],
+        [
+          String(Date.now()),
+          `${Date.now()}:${randomUUID()}`,
+          String(RATE_WINDOW_MS),
+          String(DAILY_WINDOW_MS),
+          String(MAX_REQUESTS_PER_HOUR),
+          String(MAX_REQUESTS_PER_DAY),
+        ],
+      );
+      if (
+        !Array.isArray(result) ||
+        typeof result[0] !== "number" ||
+        typeof result[1] !== "number"
+      ) {
         throw new Error("Unexpected Valkey rate-limit response");
       }
       return { allowed: result[0] === 1, retryAfterSeconds: result[1] };
@@ -209,9 +120,19 @@ export const transcribeAudio = createServerFn({ method: "POST" })
   .inputValidator((d) =>
     z
       .object({
-        audioBase64: z.string().min(60).max(1_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+        audioBase64: z
+          .string()
+          .min(60)
+          .max(1_000_000)
+          .regex(/^[A-Za-z0-9+/]+={0,2}$/),
         duration: z.number().positive().max(12),
-        billing: z.object({parts:manifestSchema,index:z.number().int().nonnegative(),cost:z.number().int().nonnegative()}).optional(),
+        billing: z
+          .object({
+            parts: manifestSchema,
+            index: z.number().int().nonnegative(),
+            cost: z.number().int().nonnegative(),
+          })
+          .optional(),
       })
       .parse(d),
   )
@@ -220,7 +141,10 @@ export const transcribeAudio = createServerFn({ method: "POST" })
     const limit = await checkTranscriptionLimit(ip);
     if (!limit.allowed) {
       console.warn("Transcription rate limit reached");
-      return { error: "Você atingiu o limite temporário de transcrições. Aguarde um pouco e tente novamente." };
+      return {
+        error:
+          "Você atingiu o limite temporário de transcrições. Aguarde um pouco e tente novamente.",
+      };
     }
 
     const apiKey = process.env["GROQ_API_KEY"];
@@ -240,7 +164,7 @@ export const transcribeAudio = createServerFn({ method: "POST" })
         if (!data.billing) return { error: "Atualize a página para conferir o saldo." };
         const { parts, index, cost } = data.billing;
         const part = parts[index];
-        const { wallet, price } = videoQuote(parts);
+        const { wallet, price } = await videoQuote(parts);
         if (!part || !price.allowed || price.cost > cost)
           return { error: "Confira seu saldo antes de transcrever." };
         const hash = digest(data.audioBase64);
@@ -259,10 +183,7 @@ export const transcribeAudio = createServerFn({ method: "POST" })
           audioBytes.readUInt32LE(40) !== audioBytes.length - 44
         )
           return { error: "O áudio não corresponde ao orçamento." };
-        const db = database();
-        db.prepare("DELETE FROM parts WHERE expires<=?").run(Date.now());
-        if (db.prepare("SELECT 1 FROM parts WHERE wallet=? AND hash=?").get(wallet, hash))
-          return { words: [] };
+        if (await getCachedPart(wallet, hash, data.duration)) return { words: [] };
         cache = { wallet, hash };
       }
       const form = new FormData();
@@ -288,7 +209,9 @@ export const transcribeAudio = createServerFn({ method: "POST" })
           return { error: "Muitas solicitações à transcrição. Aguarde um pouco e tente de novo." };
         }
         if (response.status === 401 || response.status === 403) {
-          return { error: "A chave da Groq não foi aceita pelo servidor. Verifique a configuração." };
+          return {
+            error: "A chave da Groq não foi aceita pelo servidor. Verifique a configuração.",
+          };
         }
         if (response.status === 413) {
           return { error: "O trecho de áudio é grande demais para a transcrição." };
@@ -298,24 +221,18 @@ export const transcribeAudio = createServerFn({ method: "POST" })
 
       const payload = groqResponseSchema.parse(await response.json());
       const words = normalizeWords(
-        payload.words.map(({ word, start, end }) => ({
-          text: word.trim(),
-          start,
-          end,
-        })).filter((word) => word.text.length > 0),
+        payload.words
+          .map(({ word, start, end }) => ({
+            text: word.trim(),
+            start,
+            end,
+          }))
+          .filter((word) => word.text.length > 0),
         data.duration,
       );
 
       if (cache) {
-        database()
-          .prepare("INSERT OR REPLACE INTO parts VALUES(?,?,?,?,?)")
-          .run(
-            cache.wallet,
-            cache.hash,
-            data.duration,
-            JSON.stringify(words),
-            Date.now() + 3600000,
-          );
+        await putCachedPart(cache.wallet, cache.hash, data.duration, words);
         return { words: [] };
       }
       if (!words.length) return { error: "Não encontramos fala neste vídeo." };

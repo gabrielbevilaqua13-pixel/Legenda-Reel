@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "./ui/button";
+import { leaveOwnerMode } from "@/lib/admin.functions";
 import { activatePack, getWallet } from "@/lib/billing.functions";
 
 export type Wallet = NonNullable<Awaited<ReturnType<typeof getWallet>>>;
@@ -23,6 +24,17 @@ export function MinuteWallet({
   const [code, setCode] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  if (wallet.owner) return (
+    <section className="mb-5 rounded-2xl border border-primary/25 p-5">
+      <h2 className="text-lg font-bold">Modo proprietário · sem desconto de minutos</h2>
+      <Button variant="outline" disabled={busy} onClick={async () => {
+        setBusy(true);
+        try { await leaveOwnerMode(); window.location.assign("/"); }
+        catch { setMessage("Não foi possível sair. Tente novamente."); setBusy(false); }
+      }}>Sair do modo proprietário</Button>
+      {message && <p role="status">{message}</p>}
+    </section>
+  );
   return (
     <section className="mb-5 space-y-3 rounded-2xl border border-primary/25 bg-primary/[0.04] p-5">
       <h2 className="font-display text-xl font-bold">Seus minutos</h2>

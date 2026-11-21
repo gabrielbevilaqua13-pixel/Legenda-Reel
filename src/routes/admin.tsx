@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { issuePackAdmin } from "@/lib/admin.functions";
+import { enterOwnerMode, issuePackAdmin } from "@/lib/admin.functions";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({ meta: [{ title: "Administração — Legenda" }] }),
@@ -17,7 +17,7 @@ function Admin() {
   return (
     <main className="mx-auto min-h-screen max-w-xl px-5 py-16">
       <p className="text-xs font-bold uppercase tracking-[0.25em] text-primary">Legenda</p>
-      <h1 className="mt-3 font-display text-4xl font-extrabold">Liberar pacote</h1>
+      <h1 className="mt-3 font-display text-4xl font-extrabold">Administração</h1>
       <p className="mt-4 text-sm leading-6 text-muted-foreground">
         Confirme primeiro no Mercado Pago que o pagamento de R$ 9,90 foi aprovado. Cada ID gera um
         único código de 10 minutos.
@@ -51,6 +51,18 @@ function Admin() {
             required
           />
         </label>
+        <Button type="button" disabled={busy || !secret} onClick={async () => {
+          setBusy(true);
+          setMessage("");
+          try {
+            await enterOwnerMode({ data: secret });
+            window.location.assign("/");
+          } catch {
+            setMessage("Não foi possível entrar. Confira a senha administrativa.");
+          } finally {
+            setBusy(false);
+          }
+        }}>Usar o editor como proprietário</Button>
         <label className="block space-y-2 text-sm font-semibold">
           <span>ID numérico do pagamento aprovado</span>
           <input

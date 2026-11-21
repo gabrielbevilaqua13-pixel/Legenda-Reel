@@ -1,10 +1,26 @@
 import { randomBytes } from "node:crypto";
-import { getCookie, setCookie, getRequestIP } from "@tanstack/react-start/server";
+import { getCookie, setCookie, getRequestIP, useSession } from "@tanstack/react-start/server";
 import { digest, quote } from "./credits-store.server";
 import type { Manifest } from "./billing-schema";
 
 export const enabled = () =>
   Boolean(process.env["SUPABASE_URL"] && process.env["SUPABASE_PUBLISHABLE_KEY"]);
+const ownerCookie = "legenda-owner";
+export function ownerSession() {
+  const secret = process.env["LEGENDA_ADMIN_SECRET"] || "";
+  if (secret.length < 20) throw Error("Acesso de proprietário indisponível.");
+  return useSession<{ owner: boolean }>({
+    name: ownerCookie,
+    password: digest("legenda-owner-session:" + secret),
+    maxAge: 8 * 3600,
+    sessionHeader: false,
+    cookie: { httpOnly: true, secure: process.env["NODE_ENV"] === "production", sameSite: "strict", path: "/" },
+  });
+}
+export async function isOwner() {
+  if (!getCookie(ownerCookie) || (process.env["LEGENDA_ADMIN_SECRET"] || "").length < 20) return false;
+  return (await ownerSession()).data.owner === true;
+}
 export function remember(id: string) {
   setCookie("legenda-wallet", id, {
     httpOnly: true,
@@ -39,12 +55,14 @@ export async function videoQuote(parts: Manifest) {
   const seconds = Math.ceil(end - 0.00001);
   if (seconds < 1 || seconds > 600) throw Error("Envie um vídeo de até 10 minutos.");
   const { wallet, network } = identity();
+  const owner = await isOwner();
   const video = digest(parts.map((p) => p.hash).join("/"));
   return {
     wallet,
     network,
     video,
     seconds,
-    price: await quote(wallet, network, video, seconds),
+    owner,
+    price: owner ? { available: 0, cost: 0, allowed: true, free: false } : await quote(wallet, network, video, seconds),
   };
 }

@@ -7,7 +7,7 @@ import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
 import { transcribeAudio, type Word } from "@/lib/transcribe.functions";
 import { STYLES, drawCaptions, groupWords, loadCaptionFonts, retextChunk, toSrt } from "@/lib/captions";
-import { extractWavSegments, renderVideo } from "@/lib/media";
+import { extractWavSegments, packageOriginal, renderVideo } from "@/lib/media";
 import { mergeSegments } from "@/lib/timing";
 import { getWallet, getQuote, finishVideo } from "@/lib/billing.functions";
 import { MinuteWallet, timeLabel, type Wallet } from "@/components/MinuteWallet";
@@ -58,6 +58,7 @@ function Index() {
   const [maxWords, setMaxWords] = useState(3);
   const [posY, setPosY] = useState(0.68);
   const [scale, setScale] = useState(1);
+  const [packaging, setPackaging] = useState(false);
   const [exporting, setExporting] = useState<number | null>(null);
 
   useEffect(() => {
@@ -217,11 +218,26 @@ function Index() {
     setError("");
   };
 
+  const exportOriginal = async () => {
+    if (!file) return;
+    setError("");
+    setPackaging(true);
+    try {
+      const archive = await packageOriginal(file, chunks);
+      download(archive, file.name.replace(/\.[^.]+$/, "") + "-original.zip");
+    } catch {
+      setError("Falha ao preparar o ZIP. Tente novamente.");
+    } finally {
+      setPackaging(false);
+    }
+  };
+
   const exportVideo = async () => {
+    setError("");
     setExporting(0);
     try {
       await loadCaptionFonts();
-      const { blob, ext } = await renderVideo(file!, url, chunks, style, { posY, scale }, setExporting);
+      const { blob, ext } = await renderVideo(file!, chunks, style, { posY, scale }, setExporting);
       download(blob, `${(file?.name ?? "reel").replace(/\.[^.]+$/, "")}-legendado.${ext}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Falha ao exportar.");
@@ -482,7 +498,7 @@ function Index() {
               <div className="mb-4">
                 <div className="text-xs font-extrabold uppercase tracking-[0.18em] text-primary">06 / Finalização</div>
                 <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight">Seu vídeo está quase pronto.</h2>
-                <p className="mt-1 text-xs text-muted-foreground">Exporte o vídeo com as legendas aplicadas ou baixe o arquivo SRT.</p>
+                <p className="mt-1 text-xs text-muted-foreground">Para manter a qualidade exata, baixe o ZIP com o vídeo original e as legendas em SRT. Para publicar com o estilo da prévia, escolha o MP4 com legendas gravadas. Essa opção recodifica a imagem.</p>
               </div>
               {exporting !== null ? (
                 <div className="space-y-3">
@@ -490,9 +506,12 @@ function Index() {
                   <div className="flex items-center justify-between text-xs text-muted-foreground"><span>Renderizando vídeo… mantenha esta aba aberta.</span><strong className="text-primary">{Math.round(exporting * 100)}%</strong></div>
                 </div>
               ) : (
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <Button size="lg" onClick={exportVideo} className="h-12 flex-1 rounded-xl font-extrabold shadow-glow">
-                    <Download /> Exportar vídeo
+                <div className="flex flex-col gap-3">
+                  <Button size="lg" disabled={packaging} onClick={exportOriginal} className="h-12 rounded-xl font-extrabold shadow-glow">
+                    <Download /> {packaging ? "Preparando ZIP…" : "Original + SRT (.zip)"}
+                  </Button>
+                  <Button size="lg" variant="outline" disabled={packaging} onClick={exportVideo} className="h-12 rounded-xl">
+                    <Download /> MP4 com legendas gravadas
                   </Button>
                   <Button size="lg" variant="outline" onClick={() => download(new Blob([toSrt(chunks)], { type: "text/plain" }), "legendas.srt")} className="h-12 rounded-xl border-white/15 bg-white/[0.04]">
                     <FileText /> Baixar SRT

@@ -132,7 +132,9 @@ export async function renderVideo(
       input,
       output,
       video: {
+        codec: "avc",
         quality: QUALITY_VERY_HIGH,
+        forceTranscode: true,
         allowTransformationMetadata: false,
         process: (sample) => {
           const w = sample.displayWidth;
@@ -145,6 +147,11 @@ export async function renderVideo(
           drawCaptions(ctx, w, h, chunks, sample.timestamp, style, opts);
           return canvas;
         },
+      },
+      audio: {
+        codec: "aac",
+        bitrate: 192_000,
+        forceTranscode: true,
       },
       showWarnings: false,
     });

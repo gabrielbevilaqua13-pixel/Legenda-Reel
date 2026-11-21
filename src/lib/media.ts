@@ -105,6 +105,12 @@ export async function makePreview(file: File, signal: AbortSignal, onProgress: (
     conversion.onProgress = onProgress;
     await conversion.execute();
     return new Blob([target.buffer!], { type: "video/mp4" });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    await conversion?.cancel().catch(() => {});
+    input.dispose();
+    const { createLightPreview } = await import("./preview-worker");
+    return await createLightPreview(file, signal, onProgress);
   } finally {
     signal.removeEventListener("abort", cancel);
     input.dispose();

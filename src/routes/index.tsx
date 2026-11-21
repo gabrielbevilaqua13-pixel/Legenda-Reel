@@ -774,6 +774,9 @@ function Preview({
           if (exporting || (light && !previewUrl && !previewError)) event.currentTarget.pause();
         }} onLoadedMetadata={event => {
           const v = event.currentTarget;
+          if (!light && Math.max(v.videoWidth, v.videoHeight) > 1920) {
+            startLightPreview(v);
+          }
           if (previewUrl) {
             v.currentTime = resumeAt.current;
             if (resumePlaying.current) void v.play().catch(() => {});

@@ -148,15 +148,12 @@ export async function renderVideo(
           return canvas;
         },
       },
-      audio: {
-        codec: "aac",
-        bitrate: 192_000,
-        forceTranscode: true,
-      },
       showWarnings: false,
     });
 
-    if (!conversion.isValid || conversion.discardedTracks.some(({ track }) => track.type === "video" || track.type === "audio")) throw new Error("Não foi possível converter este vídeo.");
+    if (!conversion.isValid || conversion.discardedTracks.some(({ track }) => track.type === "video")) {
+      throw new Error("O navegador não conseguiu codificar a imagem deste vídeo.");
+    }
 
     conversion.onProgress = (p) => onProgress(p);
     await conversion.execute();
